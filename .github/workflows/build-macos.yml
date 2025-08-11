@@ -23,20 +23,26 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      # 先把 whisper.cpp 打成 xcframework（VoiceInk 依赖它）
+      # === 关键：获取并构建 whisper.cpp 为 XCFramework ===
       - name: Install deps for whisper.cpp
         run: brew update && brew install cmake
 
+      - name: Clone whisper.cpp
+        run: |
+          set -e
+          if [ ! -d whisper.cpp ]; then
+            git clone --depth=1 https://github.com/ggml-org/whisper.cpp.git whisper.cpp
+          fi
+          ls -la whisper.cpp
+
       - name: Build whisper.xcframework
-        shell: bash
         run: |
           set -e
           cd whisper.cpp
-          # 官方脚本会在 ./build-apple 下生成 whisper.xcframework
           bash ./build-xcframework.sh
-          test -d build-apple/whisper.xcframework && echo "whisper.xcframework built ✅"
+          test -d build-apple/whisper.xcframework || { echo "❌ whisper.xcframework not found"; exit 1; }
 
-      # 递归寻找 .xcworkspace / .xcodeproj
+      # === 递归找工程文件 ===
       - name: Detect project file (recursive)
         id: detect
         shell: bash
@@ -56,7 +62,7 @@ jobs:
           echo "dir=$DIR"  >> "$GITHUB_OUTPUT"
           echo "Found $KIND: $FILE (dir: $DIR)"
 
-      # 列出所有 schemes（调试可留）
+      # 调试：列出全部 schemes
       - name: List all schemes (debug)
         shell: bash
         run: |
@@ -71,6 +77,7 @@ jobs:
           fi
           echo "=== end list ==="
 
+      # === 构建主应用 Scheme ===
       - name: Build VoiceInk
         shell: bash
         run: |
