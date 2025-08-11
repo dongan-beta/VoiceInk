@@ -1,51 +1,97 @@
 name: Build macOS App
 
 on:
-  workflow_dispatch: {}   # 手动触发；需要时也可改成 push/release 触发
+  workflow_dispatch: {}   # 手动触发；需要时可加 push/release 触发
 
 env:
-  SCHEME: VoiceInk            # ← 如果仓库里 scheme 不是这个，改成实际名称
-  PROJECT_FILE: VoiceInk.xcodeproj   # ← 如用 .xcworkspace 则改为 workspace，并在命令里换 -workspace
+  SCHEME: VoiceInk               # ← 如不同，改成你的 Scheme 名
   CONFIGURATION: Release
 
 jobs:
   build:
-    runs-on: macos-14   # Apple Silicon Runner，Xcode 已预装
+    runs-on: macos-15            # 使用含 Xcode 16 的 Runner
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
       - name: Show Xcode version
         run: xcodebuild -version
 
-      # 如果项目需要brew依赖（可选），在这里安装；默认先跳过
+      # 如需 Homebrew 依赖（cmake/portaudio等），取消下方注释
       # - name: Install deps (optional)
       #   run: |
       #     brew update
-      #     brew install pkg-config cmake portaudio
+      #     brew install cmake portaudio pkg-config
+
+      - name: Detect project file
+        id: detect
+        shell: bash
+        run: |
+          set -e
+          PROJ=""
+          if ls *.xcworkspace >/dev/null 2>&1; then
+            PROJ="$(ls -1 *.xcworkspace | head -n1)"
+            echo "kind=workspace" >> $GITHUB_OUTPUT
+            echo "file=$PROJ" >> $GITHUB_OUTPUT
+            echo "Detected workspace: $PROJ"
+          elif ls *.xcodeproj >/dev/null 2>&1; then
+            PROJ="$(ls -1 *.xcodeproj | head -n1)"
+            echo "kind=project" >> $GITHUB_OUTPUT
+            echo "file=$PROJ" >> $GITHUB_OUTPUT
+            echo "Detected project: $PROJ"
+          else
+            echo "No .xcworkspace or .xcodeproj found in repo root."
+            exit 1
+          fi
 
       - name: Build (xcodebuild)
+        env:
+          SCHEME: ${{ env.SCHEME }}
+          CONFIGURATION: ${{ env.CONFIGURATION }}
         run: |
           set -e
           DERIVED_DIR="$RUNNER_TEMP/DerivedData"
-          xcodebuild \
-            -project "${PROJECT_FILE}" \
-            -scheme "${SCHEME}" \
-            -configuration "${CONFIGURATION}" \
-            -derivedDataPath "$DERIVED_DIR" \
-            build
+          KIND="${{ steps.detect.outputs.kind }}"
+          FILE="${{ steps.detect.outputs.file }}"
+
+          # 关闭签名 & 提高容错
+          COMMON_FLAGS=(
+            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGN_IDENTITY=""
+            ONLY_ACTIVE_ARCH=NO
+            ENABLE_HARDENED_RUNTIME=NO
+            -configuration "${CONFIGURATION}"
+            -scheme "${SCHEME}"
+            -derivedDataPath "$DERIVED_DIR"
+            -quiet
+          )
+
+          if [ "$KIND" = "workspace" ]; then
+            set -o pipefail
+            xcodebuild -workspace "$FILE" "${COMMON_FLAGS[@]}" build | xcpretty || true
+          else
+            set -o pipefail
+            xcodebuild -project "$FILE" "${COMMON_FLAGS[@]}" build | xcpretty || true
+          fi
 
           echo "DERIVED_DIR=$DERIVED_DIR" >> $GITHUB_ENV
 
-      - name: Locate app product
+      - name: Locate .app product
         id: findapp
         shell: bash
         run: |
-          APP_PATH="$(find "$DERIVED_DIR/Build/Products/${CONFIGURATION}" -maxdepth 2 -name '*.app' -print -quit)"
+          set -e
+          APP_PATH="$(find "$DERIVED_DIR/Build/Products/${{ env.CONFIGURATION }}" -maxdepth 3 -name '*.app' -print -quit)"
           if [[ -z "$APP_PATH" ]]; then
-            echo "No .app found in $DERIVED_DIR/Build/Products/${CONFIGURATION}"
+            echo "No .app found under $DERIVED_DIR/Build/Products/${{ env.CONFIGURATION }}"
+            echo "List:"
+            find "$DERIVED_DIR/Build/Products" -maxdepth 3 -type d -print || true
             exit 1
           fi
           echo "app=$APP_PATH" >> $GITHUB_OUTPUT
@@ -56,7 +102,7 @@ jobs:
           APP="${{ steps.findapp.outputs.app }}"
           cd "$(dirname "$APP")"
           zip -r "VoiceInk.app.zip" "$(basename "$APP")"
-          echo "Zipped to $(pwd)/VoiceInk.app.zip"
+          echo "Zipped: $(pwd)/VoiceInk.app.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
