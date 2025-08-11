@@ -1,146 +1,123 @@
-name: Build macOS App
+name: Build VoiceInk Unsigned
 
 on:
-  workflow_dispatch: {}
-
-env:
-  SCHEME: VoiceInk
-  CONFIGURATION: Release
+  workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
   build:
-    runs-on: macos-15
-
+    runs-on: macos-14
+    
     steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+    - name: Checkout VoiceInk
+      uses: actions/checkout@v4
+      
+    - name: Setup Build Environment
+      run: |
+        # 安装必要的工具
+        brew install cmake
+        
+        # 设置 Xcode
+        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+        
+    - name: Build whisper.cpp Framework
+      run: |
+        # 克隆 whisper.cpp
+        git clone https://github.com/ggerganov/whisper.cpp.git
+        cd whisper.cpp
+        
+        # 构建 xcframework
+        chmod +x build-xcframework.sh
+        ./build-xcframework.sh
+        
+        # 复制到项目目录
+        cd ..
+        cp -R whisper.cpp/whisper.xcframework .
+        
+        # 创建预期的目录结构
+        mkdir -p whisper.cpp/build-apple
+        cp -R whisper.cpp/whisper.xcframework whisper.cpp/build-apple/
+        
+    - name: Disable Code Signing
+      run: |
+        # 修改项目文件以禁用签名
+        PROJECT_FILE="VoiceInk.xcodeproj/project.pbxproj"
+        
+        # 备份原文件
+        cp "$PROJECT_FILE" "$PROJECT_FILE.backup"
+        
+        # 使用 Python 脚本修改（更可靠）
+        python3 << 'EOF'
+import re
 
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.app
+with open("VoiceInk.xcodeproj/project.pbxproj", "r") as f:
+    content = f.read()
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+# 删除签名相关配置
+content = re.sub(r'CODE_SIGN_ENTITLEMENTS = [^;]+;', '', content)
+content = re.sub(r'CODE_SIGN_IDENTITY\[sdk=macosx\*\] = "[^"]*";', 'CODE_SIGN_IDENTITY = "";', content)
+content = re.sub(r'CODE_SIGN_STYLE = Automatic;', 'CODE_SIGN_STYLE = Manual;', content)
+content = re.sub(r'DEVELOPMENT_TEAM = "[^"]*";', 'DEVELOPMENT_TEAM = "";', content)
+content = re.sub(r'ENABLE_HARDENED_RUNTIME = YES;', 'ENABLE_HARDENED_RUNTIME = NO;', content)
 
-      # 1) 在“父目录”克隆并构建 whisper.cpp，使其路径变为 ../whisper.cpp
-      - name: Install deps for whisper.cpp
-        run: brew update && brew install cmake
+# 添加禁用签名的设置
+content = re.sub(
+    r'(buildSettings = \{)',
+    r'\1\n\t\t\t\tCODE_SIGNING_ALLOWED = NO;\n\t\t\t\tCODE_SIGNING_REQUIRED = NO;',
+    content
+)
 
-      - name: Clone whisper.cpp (in parent dir)
-        shell: bash
-        run: |
-          set -e
-          PARENT_DIR="$(dirname "$GITHUB_WORKSPACE")"
-          echo "PARENT_DIR=$PARENT_DIR"
-          if [ ! -d "$PARENT_DIR/whisper.cpp" ]; then
-            git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git "$PARENT_DIR/whisper.cpp"
-          fi
-          ls -la "$PARENT_DIR"
+with open("VoiceInk.xcodeproj/project.pbxproj", "w") as f:
+    f.write(content)
 
-      - name: Build whisper.xcframework (in parent dir)
-        shell: bash
-        run: |
-          set -e
-          PARENT_DIR="$(dirname "$GITHUB_WORKSPACE")"
-          cd "$PARENT_DIR/whisper.cpp"
-          bash ./build-xcframework.sh
-          echo "== after build =="
-          ls -la build-apple || true
-          test -d build-apple/whisper.xcframework || { echo "❌ whisper.xcframework not found at ../whisper.cpp/build-apple/whisper.xcframework"; exit 1; }
-
-      # 2) 选择 VoiceInk 的工程文件（排除父目录中的 whisper.cpp），优先 VoiceInk*.xcworkspace/.xcodeproj
-      - name: Detect project file (exclude ../whisper.cpp)
-        id: detect
-        shell: bash
-        run: |
-          set -e
-          # 在当前仓库内查找（不要跨到父目录）
-          FILE="$(find . -name 'VoiceInk*.xcworkspace' -type d -print -quit)"
-          KIND=""
-          if [ -n "$FILE" ]; then
-            KIND="workspace"
-          else
-            FILE="$(find . -name '*.xcworkspace' -type d -print | head -n 1)"
-            if [ -n "$FILE" ]; then
-              KIND="workspace"
-            else
-              FILE="$(find . -name 'VoiceInk*.xcodeproj' -type d -print -quit)"
-              if [ -n "$FILE" ]; then
-                KIND="project"
-              else
-                FILE="$(find . -name '*.xcodeproj' -type d -print | head -n 1)"
-                [ -n "$FILE" ] && KIND="project"
-              fi
-            fi
-          fi
-          [ -z "$FILE" ] && { echo "❌ No .xcworkspace or .xcodeproj found"; exit 1; }
-          DIR="$(dirname "$FILE")"
-          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
-          echo "file=$FILE" >> "$GITHUB_OUTPUT"
-          echo "dir=$DIR"  >> "$GITHUB_OUTPUT"
-          echo "✅ Selected $KIND: $FILE"
-
-      - name: List all schemes (debug)
-        shell: bash
-        run: |
-          set -e
-          cd "${{ steps.detect.outputs.dir }}"
-          BASE="$(basename "${{ steps.detect.outputs.file }}")"
-          echo "=== xcodebuild -list for $BASE ==="
-          if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
-            xcodebuild -workspace "$BASE" -list
-          else
-            xcodebuild -project "$BASE" -list
-          fi
-          echo "=== end list ==="
-
-      - name: Build VoiceInk
-        shell: bash
-        run: |
-          set -e
-          cd "${{ steps.detect.outputs.dir }}"
-          DERIVED_DIR="$RUNNER_TEMP/DerivedData"
-          BASE="$(basename "${{ steps.detect.outputs.file }}")"
-          FLAGS="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= ONLY_ACTIVE_ARCH=NO ENABLE_HARDENED_RUNTIME=NO -destination 'generic/platform=macOS' -configuration ${CONFIGURATION} -scheme '${SCHEME}' -derivedDataPath $DERIVED_DIR"
-          echo "🏗  Building $BASE scheme=${SCHEME}"
-          if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
-            eval xcodebuild -workspace "\"$BASE\"" $FLAGS build
-          else
-            eval xcodebuild -project "\"$BASE\"" $FLAGS build
-          fi
-          echo "DERIVED_DIR=$DERIVED_DIR" >> "$GITHUB_ENV"
-
-      - name: Locate .app product
-        id: findapp
-        shell: bash
-        run: |
-          set -e
-          echo "== Products tree =="
-          find "$DERIVED_DIR/Build/Products" -maxdepth 4 -type d -print || true
-          APP_PATH="$(find "$DERIVED_DIR/Build/Products/${CONFIGURATION}" -maxdepth 4 -name '*.app' -print -quit)"
-          if [ -z "$APP_PATH" ]; then
-            echo "❌ No .app found under $DERIVED_DIR/Build/Products/${CONFIGURATION}"
-            exit 1
-          fi
-          echo "app=$APP_PATH" >> "$GITHUB_OUTPUT"
-          echo "✅ Found app: $APP_PATH"
-
-      - name: Zip app
-        if: steps.findapp.outputs.app != ''
-        shell: bash
-        run: |
-          set -e
-          APP="${{ steps.findapp.outputs.app }}"
-          cd "$(dirname "$APP")"
-          zip -r "VoiceInk.app.zip" "$(basename "$APP")"
-
-      - name: Upload artifact
-        if: steps.findapp.outputs.app != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: VoiceInk.app
-          path: |
-            ${{ steps.findapp.outputs.app }}
-            $(dirname ${{ steps.findapp.outputs.app }})/VoiceInk.app.zip
-          if-no-files-found: error
+print("✅ 签名设置已禁用")
+EOF
+        
+    - name: Build VoiceInk
+      run: |
+        # 清理构建目录
+        rm -rf build DerivedData
+        
+        # 构建应用
+        xcodebuild \
+          -project VoiceInk.xcodeproj \
+          -scheme VoiceInk \
+          -configuration Release \
+          -derivedDataPath DerivedData \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          ENABLE_HARDENED_RUNTIME=NO \
+          build
+        
+    - name: Package Application
+      run: |
+        # 查找构建的应用
+        APP_PATH=$(find DerivedData -name "VoiceInk.app" -type d | head -1)
+        
+        if [ -z "$APP_PATH" ]; then
+          echo "❌ 找不到 VoiceInk.app"
+          exit 1
+        fi
+        
+        echo "✅ 找到应用: $APP_PATH"
+        
+        # 创建 ZIP 包
+        zip -r VoiceInk-unsigned.zip "$APP_PATH"
+        
+        # 创建 DMG（可选）
+        mkdir -p dist
+        cp -R "$APP_PATH" dist/
+        hdiutil create -volname "VoiceInk" \
+          -srcfolder dist \
+          -ov -format UDZO \
+          VoiceInk-unsigned.dmg
+        
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: VoiceInk-Build
+        path: |
+          VoiceInk-unsigned.zip
+          VoiceInk-unsigned.dmg
