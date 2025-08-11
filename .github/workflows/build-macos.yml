@@ -23,60 +23,64 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      # 1) 按 BUILDING.md：克隆并构建 ggerganov/whisper.cpp -> build-apple/whisper.xcframework
+      # 1) 在“父目录”克隆并构建 whisper.cpp，使其路径变为 ../whisper.cpp
       - name: Install deps for whisper.cpp
         run: brew update && brew install cmake
 
-      - name: Clone whisper.cpp (ggerganov)
+      - name: Clone whisper.cpp (in parent dir)
+        shell: bash
         run: |
           set -e
-          if [ ! -d whisper.cpp ]; then
-            git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git whisper.cpp
+          PARENT_DIR="$(dirname "$GITHUB_WORKSPACE")"
+          echo "PARENT_DIR=$PARENT_DIR"
+          if [ ! -d "$PARENT_DIR/whisper.cpp" ]; then
+            git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git "$PARENT_DIR/whisper.cpp"
           fi
-          echo "== whisper.cpp tree =="
-          ls -la whisper.cpp
+          ls -la "$PARENT_DIR"
 
-      - name: Build whisper.xcframework
+      - name: Build whisper.xcframework (in parent dir)
+        shell: bash
         run: |
           set -e
-          cd whisper.cpp
+          PARENT_DIR="$(dirname "$GITHUB_WORKSPACE")"
+          cd "$PARENT_DIR/whisper.cpp"
           bash ./build-xcframework.sh
           echo "== after build =="
           ls -la build-apple || true
-          test -d build-apple/whisper.xcframework || { echo "❌ whisper.xcframework not found at build-apple/whisper.xcframework"; exit 1; }
+          test -d build-apple/whisper.xcframework || { echo "❌ whisper.xcframework not found at ../whisper.cpp/build-apple/whisper.xcframework"; exit 1; }
 
-      # 2) 选择 VoiceInk 的工程文件（排除 whisper.cpp），优先 VoiceInk*.xcworkspace/.xcodeproj
-      - name: Detect project file (exclude whisper.cpp)
+      # 2) 选择 VoiceInk 的工程文件（排除父目录中的 whisper.cpp），优先 VoiceInk*.xcworkspace/.xcodeproj
+      - name: Detect project file (exclude ../whisper.cpp)
         id: detect
         shell: bash
         run: |
           set -e
-          FILE="$(find . -path './whisper.cpp' -prune -o -name 'VoiceInk*.xcworkspace' -type d -print -quit)"
+          # 在当前仓库内查找（不要跨到父目录）
+          FILE="$(find . -name 'VoiceInk*.xcworkspace' -type d -print -quit)"
           KIND=""
           if [ -n "$FILE" ]; then
             KIND="workspace"
           else
-            FILE="$(find . -path './whisper.cpp' -prune -o -name '*.xcworkspace' -type d -print | head -n 1)"
+            FILE="$(find . -name '*.xcworkspace' -type d -print | head -n 1)"
             if [ -n "$FILE" ]; then
               KIND="workspace"
             else
-              FILE="$(find . -path './whisper.cpp' -prune -o -name 'VoiceInk*.xcodeproj' -type d -print -quit)"
+              FILE="$(find . -name 'VoiceInk*.xcodeproj' -type d -print -quit)"
               if [ -n "$FILE" ]; then
                 KIND="project"
               else
-                FILE="$(find . -path './whisper.cpp' -prune -o -name '*.xcodeproj' -type d -print | head -n 1)"
+                FILE="$(find . -name '*.xcodeproj' -type d -print | head -n 1)"
                 [ -n "$FILE" ] && KIND="project"
               fi
             fi
           fi
-          [ -z "$FILE" ] && { echo "❌ No .xcworkspace or .xcodeproj found (excluding whisper.cpp)"; exit 1; }
+          [ -z "$FILE" ] && { echo "❌ No .xcworkspace or .xcodeproj found"; exit 1; }
           DIR="$(dirname "$FILE")"
           echo "kind=$KIND" >> "$GITHUB_OUTPUT"
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
           echo "dir=$DIR"  >> "$GITHUB_OUTPUT"
           echo "✅ Selected $KIND: $FILE"
 
-      # （可留作调试）列出 schemes
       - name: List all schemes (debug)
         shell: bash
         run: |
@@ -91,7 +95,6 @@ jobs:
           fi
           echo "=== end list ==="
 
-      # 3) 构建主应用 Scheme：VoiceInk
       - name: Build VoiceInk
         shell: bash
         run: |
