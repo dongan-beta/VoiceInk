@@ -4,7 +4,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  SCHEME: VoiceInk           # ← 固定为主应用的 scheme
+  SCHEME: VoiceInk
   CONFIGURATION: Release
 
 jobs:
@@ -22,6 +22,19 @@ jobs:
 
       - name: Show Xcode version
         run: xcodebuild -version
+
+      # 先把 whisper.cpp 打成 xcframework（VoiceInk 依赖它）
+      - name: Install deps for whisper.cpp
+        run: brew update && brew install cmake
+
+      - name: Build whisper.xcframework
+        shell: bash
+        run: |
+          set -e
+          cd whisper.cpp
+          # 官方脚本会在 ./build-apple 下生成 whisper.xcframework
+          bash ./build-xcframework.sh
+          test -d build-apple/whisper.xcframework && echo "whisper.xcframework built ✅"
 
       # 递归寻找 .xcworkspace / .xcodeproj
       - name: Detect project file (recursive)
@@ -43,7 +56,7 @@ jobs:
           echo "dir=$DIR"  >> "$GITHUB_OUTPUT"
           echo "Found $KIND: $FILE (dir: $DIR)"
 
-      # 可留着调试用：列出全部 schemes
+      # 列出所有 schemes（调试可留）
       - name: List all schemes (debug)
         shell: bash
         run: |
@@ -58,7 +71,7 @@ jobs:
           fi
           echo "=== end list ==="
 
-      - name: Build
+      - name: Build VoiceInk
         shell: bash
         run: |
           set -e
