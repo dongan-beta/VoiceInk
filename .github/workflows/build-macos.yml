@@ -1,4 +1,4 @@
-name: Build macOS App
+name: Build macOS App (debug schemes)
 
 on:
   workflow_dispatch: {}
@@ -37,7 +37,22 @@ jobs:
           echo "kind=$KIND" >> "$GITHUB_OUTPUT"
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
           echo "dir=$DIR"  >> "$GITHUB_OUTPUT"
-          echo "Found $KIND: $FILE"
+          echo "Found $KIND: $FILE (dir: $DIR)"
+
+      # 👇 调试：列出所有 schemes，日志里会显示完整清单
+      - name: List all schemes (debug)
+        shell: bash
+        run: |
+          set -e
+          cd "${{ steps.detect.outputs.dir }}"
+          BASE="$(basename "${{ steps.detect.outputs.file }}")"
+          echo "=== xcodebuild -list for $BASE ==="
+          if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
+            xcodebuild -workspace "$BASE" -list
+          else
+            xcodebuild -project "$BASE" -list
+          fi
+          echo "=== end list ==="
 
       # 自动探测第一个可用 Scheme（优先 shared schemes）
       - name: Detect scheme
@@ -53,7 +68,7 @@ jobs:
             LIST_JSON="$(xcodebuild -project "$BASE" -list -json)"
           fi
           SCHEME="$(echo "$LIST_JSON" | /usr/bin/python3 -c "import sys,json; j=json.load(sys.stdin); c=j.get('workspace') or j.get('project') or {}; s=(c.get('schemes') or c.get('targets') or [''])[0]; print(s)")"
-          [ -z "$SCHEME" ] && { echo "❌ No scheme found (make sure Scheme is Shared)"; echo "$LIST_JSON"; exit 1; }
+          [ -z "$SCHEME" ] && { echo "❌ No scheme found (ensure the app Scheme is Shared)"; echo "$LIST_JSON"; exit 1; }
           echo "name=$SCHEME" >> "$GITHUB_OUTPUT"
           echo "Detected scheme: $SCHEME"
 
@@ -80,11 +95,17 @@ jobs:
         run: |
           set -e
           APP_PATH="$(find "$DERIVED_DIR/Build/Products/Release" -maxdepth 4 -name '*.app' -print -quit)"
-          [ -z "$APP_PATH" ] && { echo "❌ No .app found under $DERIVED_DIR/Build/Products/Release"; find "$DERIVED_DIR/Build/Products" -maxdepth 4 -type d -print || true; exit 1; }
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ No .app found under $DERIVED_DIR/Build/Products/Release"
+            echo "=== Tree under Products ==="
+            find "$DERIVED_DIR/Build/Products" -maxdepth 4 -type d -print || true
+            exit 1
+          fi
           echo "app=$APP_PATH" >> "$GITHUB_OUTPUT"
           echo "Found app: $APP_PATH"
 
       - name: Zip app
+        if: steps.findapp.outputs.app != ''
         shell: bash
         run: |
           set -e
@@ -93,6 +114,7 @@ jobs:
           zip -r "VoiceInk.app.zip" "$(basename "$APP")"
 
       - name: Upload artifact
+        if: steps.findapp.outputs.app != ''
         uses: actions/upload-artifact@v4
         with:
           name: VoiceInk.app
