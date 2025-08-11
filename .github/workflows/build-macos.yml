@@ -1,7 +1,11 @@
-name: Build macOS App (debug schemes)
+name: Build macOS App
 
 on:
   workflow_dispatch: {}
+
+env:
+  SCHEME: VoiceInk           # ← 固定为主应用的 scheme
+  CONFIGURATION: Release
 
 jobs:
   build:
@@ -39,7 +43,7 @@ jobs:
           echo "dir=$DIR"  >> "$GITHUB_OUTPUT"
           echo "Found $KIND: $FILE (dir: $DIR)"
 
-      # 👇 调试：列出所有 schemes，日志里会显示完整清单
+      # 可留着调试用：列出全部 schemes
       - name: List all schemes (debug)
         shell: bash
         run: |
@@ -54,34 +58,14 @@ jobs:
           fi
           echo "=== end list ==="
 
-      # 自动探测第一个可用 Scheme（优先 shared schemes）
-      - name: Detect scheme
-        id: scheme
-        shell: bash
-        run: |
-          set -e
-          cd "${{ steps.detect.outputs.dir }}"
-          BASE="$(basename "${{ steps.detect.outputs.file }}")"
-          if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
-            LIST_JSON="$(xcodebuild -workspace "$BASE" -list -json)"
-          else
-            LIST_JSON="$(xcodebuild -project "$BASE" -list -json)"
-          fi
-          SCHEME="$(echo "$LIST_JSON" | /usr/bin/python3 -c "import sys,json; j=json.load(sys.stdin); c=j.get('workspace') or j.get('project') or {}; s=(c.get('schemes') or c.get('targets') or [''])[0]; print(s)")"
-          [ -z "$SCHEME" ] && { echo "❌ No scheme found (ensure the app Scheme is Shared)"; echo "$LIST_JSON"; exit 1; }
-          echo "name=$SCHEME" >> "$GITHUB_OUTPUT"
-          echo "Detected scheme: $SCHEME"
-
       - name: Build
         shell: bash
-        env:
-          CONFIGURATION: Release
         run: |
           set -e
           cd "${{ steps.detect.outputs.dir }}"
           DERIVED_DIR="$RUNNER_TEMP/DerivedData"
           BASE="$(basename "${{ steps.detect.outputs.file }}")"
-          FLAGS="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= ONLY_ACTIVE_ARCH=NO ENABLE_HARDENED_RUNTIME=NO -configuration ${CONFIGURATION} -scheme '${{ steps.scheme.outputs.name }}' -derivedDataPath $DERIVED_DIR"
+          FLAGS="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= ONLY_ACTIVE_ARCH=NO ENABLE_HARDENED_RUNTIME=NO -destination 'generic/platform=macOS' -configuration ${CONFIGURATION} -scheme '${SCHEME}' -derivedDataPath $DERIVED_DIR"
           if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
             eval xcodebuild -workspace "\"$BASE\"" $FLAGS build
           else
@@ -94,9 +78,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          APP_PATH="$(find "$DERIVED_DIR/Build/Products/Release" -maxdepth 4 -name '*.app' -print -quit)"
+          APP_PATH="$(find "$DERIVED_DIR/Build/Products/${CONFIGURATION}" -maxdepth 4 -name '*.app' -print -quit)"
           if [ -z "$APP_PATH" ]; then
-            echo "❌ No .app found under $DERIVED_DIR/Build/Products/Release"
+            echo "❌ No .app found under $DERIVED_DIR/Build/Products/${CONFIGURATION}"
             echo "=== Tree under Products ==="
             find "$DERIVED_DIR/Build/Products" -maxdepth 4 -type d -print || true
             exit 1
