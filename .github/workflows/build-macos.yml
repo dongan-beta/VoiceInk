@@ -5,7 +5,8 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15   # 带 Xcode 16 的 runner
+    runs-on: macos-15
+
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -18,102 +19,60 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      # 递归寻找 .xcworkspace 或 .xcodeproj
+      # 递归寻找 .xcworkspace / .xcodeproj
       - name: Detect project file (recursive)
         id: detect
         shell: bash
         run: |
           set -e
-          FILE=""
-          KIND=""
-          # 优先 workspace
-          FILE=$(find . -name "*.xcworkspace" -type d | head -n 1 || true)
+          FILE="$(find . -name '*.xcworkspace' -type d | head -n 1 || true)"
           if [ -n "$FILE" ]; then
             KIND="workspace"
           else
-            FILE=$(find . -name "*.xcodeproj" -type d | head -n 1 || true)
-            if [ -n "$FILE" ]; then
-              KIND="project"
-            fi
+            FILE="$(find . -name '*.xcodeproj' -type d | head -n 1 || true)"
+            [ -n "$FILE" ] && KIND="project"
           fi
-          if [ -z "$FILE" ]; then
-            echo "❌ No .xcworkspace or .xcodeproj found."
-            exit 1
-          fi
-          DIR=$(dirname "$FILE")
-          echo "kind=$KIND" >> $GITHUB_OUTPUT
-          echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "dir=$DIR" >> $GITHUB_OUTPUT
-          echo "Found $KIND: $FILE (dir: $DIR)"
+          [ -z "$FILE" ] && { echo "❌ No .xcworkspace or .xcodeproj found"; exit 1; }
+          DIR="$(dirname "$FILE")"
+          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "dir=$DIR"  >> "$GITHUB_OUTPUT"
+          echo "Found $KIND: $FILE"
 
-      # 自动探测 Scheme（读取共享 scheme 的第一个）
+      # 自动探测第一个可用 Scheme（优先 shared schemes）
       - name: Detect scheme
         id: scheme
         shell: bash
         run: |
           set -e
           cd "${{ steps.detect.outputs.dir }}"
-          KIND="${{ steps.detect.outputs.kind }}"
-          FILE_BASENAME="$(basename "${{ steps.detect.outputs.file }}")"
-
-          if [ "$KIND" = "workspace" ]; then
-            LIST_JSON=$(xcodebuild -workspace "$FILE_BASENAME" -list -json)
+          BASE="$(basename "${{ steps.detect.outputs.file }}")"
+          if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
+            LIST_JSON="$(xcodebuild -workspace "$BASE" -list -json)"
           else
-            LIST_JSON=$(xcodebuild -project "$FILE_BASENAME" -list -json)
+            LIST_JSON="$(xcodebuild -project "$BASE" -list -json)"
           fi
-
-          # 用 python 解析第一个 Scheme 名（优先 sharedSchemes）
-          SCHEME=$(python3 - <<'PY'
-import json,sys
-j=json.load(sys.stdin)
-# Xcode 15/16 输出里 'workspace' 或 'project' 二选一
-c = j.get('workspace') or j.get('project') or {}
-schemes = c.get('schemes') or c.get('targets') or []
-# 取第一个
-print(schemes[0] if schemes else "")
-PY
-          <<< "$LIST_JSON")
-
-          if [ -z "$SCHEME" ]; then
-            echo "❌ No scheme found from xcodebuild -list."
-            echo "$LIST_JSON"
-            exit 1
-          fi
-
-          echo "name=$SCHEME" >> $GITHUB_OUTPUT
+          SCHEME="$(echo "$LIST_JSON" | /usr/bin/python3 -c "import sys,json; j=json.load(sys.stdin); c=j.get('workspace') or j.get('project') or {}; s=(c.get('schemes') or c.get('targets') or [''])[0]; print(s)")"
+          [ -z "$SCHEME" ] && { echo "❌ No scheme found (make sure Scheme is Shared)"; echo "$LIST_JSON"; exit 1; }
+          echo "name=$SCHEME" >> "$GITHUB_OUTPUT"
           echo "Detected scheme: $SCHEME"
 
-      - name: Build (xcodebuild)
+      - name: Build
+        shell: bash
         env:
           CONFIGURATION: Release
-        shell: bash
         run: |
           set -e
           cd "${{ steps.detect.outputs.dir }}"
           DERIVED_DIR="$RUNNER_TEMP/DerivedData"
-          KIND="${{ steps.detect.outputs.kind }}"
-          FILE_BASENAME="$(basename "${{ steps.detect.outputs.file }}")"
-          SCHEME="${{ steps.scheme.outputs.name }}"
-
-          COMMON_FLAGS=(
-            CODE_SIGNING_ALLOWED=NO
-            CODE_SIGNING_REQUIRED=NO
-            CODE_SIGN_IDENTITY=""
-            ONLY_ACTIVE_ARCH=NO
-            ENABLE_HARDENED_RUNTIME=NO
-            -configuration "${CONFIGURATION}"
-            -scheme "${SCHEME}"
-            -derivedDataPath "$DERIVED_DIR"
-          )
-
-          echo "Building scheme: $SCHEME"
-          if [ "$KIND" = "workspace" ]; then
-            xcodebuild -workspace "$FILE_BASENAME" "${COMMON_FLAGS[@]}" build
+          BASE="$(basename "${{ steps.detect.outputs.file }}")"
+          FLAGS="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= ONLY_ACTIVE_ARCH=NO ENABLE_HARDENED_RUNTIME=NO -configuration ${CONFIGURATION} -scheme '${{ steps.scheme.outputs.name }}' -derivedDataPath $DERIVED_DIR"
+          if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
+            eval xcodebuild -workspace "\"$BASE\"" $FLAGS build
           else
-            xcodebuild -project "$FILE_BASENAME" "${COMMON_FLAGS[@]}" build
+            eval xcodebuild -project "\"$BASE\"" $FLAGS build
           fi
-
-          echo "DERIVED_DIR=$DERIVED_DIR" >> $GITHUB_ENV
+          echo "DERIVED_DIR=$DERIVED_DIR" >> "$GITHUB_ENV"
 
       - name: Locate .app product
         id: findapp
@@ -121,17 +80,14 @@ PY
         run: |
           set -e
           APP_PATH="$(find "$DERIVED_DIR/Build/Products/Release" -maxdepth 4 -name '*.app' -print -quit)"
-          if [ -z "$APP_PATH" ]; then
-            echo "❌ No .app found under $DERIVED_DIR/Build/Products."
-            find "$DERIVED_DIR/Build/Products" -maxdepth 4 -type d -print || true
-            exit 1
-          fi
-          echo "app=$APP_PATH" >> $GITHUB_OUTPUT
+          [ -z "$APP_PATH" ] && { echo "❌ No .app found under $DERIVED_DIR/Build/Products/Release"; find "$DERIVED_DIR/Build/Products" -maxdepth 4 -type d -print || true; exit 1; }
+          echo "app=$APP_PATH" >> "$GITHUB_OUTPUT"
           echo "Found app: $APP_PATH"
 
       - name: Zip app
         shell: bash
         run: |
+          set -e
           APP="${{ steps.findapp.outputs.app }}"
           cd "$(dirname "$APP")"
           zip -r "VoiceInk.app.zip" "$(basename "$APP")"
