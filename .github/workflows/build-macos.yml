@@ -1,0 +1,68 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch: {}   # 手动触发；需要时也可改成 push/release 触发
+
+env:
+  SCHEME: VoiceInk            # ← 如果仓库里 scheme 不是这个，改成实际名称
+  PROJECT_FILE: VoiceInk.xcodeproj   # ← 如用 .xcworkspace 则改为 workspace，并在命令里换 -workspace
+  CONFIGURATION: Release
+
+jobs:
+  build:
+    runs-on: macos-14   # Apple Silicon Runner，Xcode 已预装
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # 如果项目需要brew依赖（可选），在这里安装；默认先跳过
+      # - name: Install deps (optional)
+      #   run: |
+      #     brew update
+      #     brew install pkg-config cmake portaudio
+
+      - name: Build (xcodebuild)
+        run: |
+          set -e
+          DERIVED_DIR="$RUNNER_TEMP/DerivedData"
+          xcodebuild \
+            -project "${PROJECT_FILE}" \
+            -scheme "${SCHEME}" \
+            -configuration "${CONFIGURATION}" \
+            -derivedDataPath "$DERIVED_DIR" \
+            build
+
+          echo "DERIVED_DIR=$DERIVED_DIR" >> $GITHUB_ENV
+
+      - name: Locate app product
+        id: findapp
+        shell: bash
+        run: |
+          APP_PATH="$(find "$DERIVED_DIR/Build/Products/${CONFIGURATION}" -maxdepth 2 -name '*.app' -print -quit)"
+          if [[ -z "$APP_PATH" ]]; then
+            echo "No .app found in $DERIVED_DIR/Build/Products/${CONFIGURATION}"
+            exit 1
+          fi
+          echo "app=$APP_PATH" >> $GITHUB_OUTPUT
+          echo "Found app: $APP_PATH"
+
+      - name: Zip app
+        run: |
+          APP="${{ steps.findapp.outputs.app }}"
+          cd "$(dirname "$APP")"
+          zip -r "VoiceInk.app.zip" "$(basename "$APP")"
+          echo "Zipped to $(pwd)/VoiceInk.app.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceInk.app
+          path: |
+            ${{ steps.findapp.outputs.app }}
+            $(dirname ${{ steps.findapp.outputs.app }})/VoiceInk.app.zip
+          if-no-files-found: error
