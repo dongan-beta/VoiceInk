@@ -23,7 +23,7 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      # === 关键：获取并构建 whisper.cpp 为 XCFramework ===
+      # === 获取并构建 whisper.cpp 为 XCFramework ===
       - name: Install deps for whisper.cpp
         run: brew update && brew install cmake
 
@@ -33,7 +33,6 @@ jobs:
           if [ ! -d whisper.cpp ]; then
             git clone --depth=1 https://github.com/ggml-org/whisper.cpp.git whisper.cpp
           fi
-          ls -la whisper.cpp
 
       - name: Build whisper.xcframework
         run: |
@@ -42,27 +41,43 @@ jobs:
           bash ./build-xcframework.sh
           test -d build-apple/whisper.xcframework || { echo "❌ whisper.xcframework not found"; exit 1; }
 
-      # === 递归找工程文件 ===
-      - name: Detect project file (recursive)
+      # === 递归找工程文件（排除 whisper.cpp），优先 VoiceInk* ===
+      - name: Detect project file (exclude whisper.cpp)
         id: detect
         shell: bash
         run: |
           set -e
-          FILE="$(find . -name '*.xcworkspace' -type d | head -n 1 || true)"
+          # 1) 优先 VoiceInk*.xcworkspace（排除 whisper.cpp）
+          FILE="$(find . -path './whisper.cpp' -prune -o -name 'VoiceInk*.xcworkspace' -type d -print -quit)"
+          KIND=""
           if [ -n "$FILE" ]; then
             KIND="workspace"
           else
-            FILE="$(find . -name '*.xcodeproj' -type d | head -n 1 || true)"
-            [ -n "$FILE" ] && KIND="project"
+            # 2) 其他 *.xcworkspace（排除 whisper.cpp）
+            FILE="$(find . -path './whisper.cpp' -prune -o -name '*.xcworkspace' -type d -print | head -n 1)"
+            if [ -n "$FILE" ]; then
+              KIND="workspace"
+            else
+              # 3) 优先 VoiceInk*.xcodeproj
+              FILE="$(find . -path './whisper.cpp' -prune -o -name 'VoiceInk*.xcodeproj' -type d -print -quit)"
+              if [ -n "$FILE" ]; then
+                KIND="project"
+              else
+                # 4) 其他 *.xcodeproj
+                FILE="$(find . -path './whisper.cpp' -prune -o -name '*.xcodeproj' -type d -print | head -n 1)"
+                [ -n "$FILE" ] && KIND="project"
+              fi
+            fi
           fi
-          [ -z "$FILE" ] && { echo "❌ No .xcworkspace or .xcodeproj found"; exit 1; }
+
+          [ -z "$FILE" ] && { echo "❌ No .xcworkspace or .xcodeproj found (excluding whisper.cpp)"; exit 1; }
           DIR="$(dirname "$FILE")"
           echo "kind=$KIND" >> "$GITHUB_OUTPUT"
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
           echo "dir=$DIR"  >> "$GITHUB_OUTPUT"
           echo "Found $KIND: $FILE (dir: $DIR)"
 
-      # 调试：列出全部 schemes
+      # 调试：列出所选工程的所有 schemes
       - name: List all schemes (debug)
         shell: bash
         run: |
@@ -77,7 +92,7 @@ jobs:
           fi
           echo "=== end list ==="
 
-      # === 构建主应用 Scheme ===
+      # 构建主应用 Scheme：VoiceInk
       - name: Build VoiceInk
         shell: bash
         run: |
