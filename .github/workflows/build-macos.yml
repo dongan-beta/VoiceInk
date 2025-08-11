@@ -47,8 +47,8 @@ jobs:
         # 备份原文件
         cp "$PROJECT_FILE" "$PROJECT_FILE.backup"
         
-        # 使用 Python 脚本修改（更可靠）
-        python3 << 'EOF'
+        # 创建 Python 脚本文件
+        cat > disable_signing.py << 'SCRIPT_END'
 import re
 
 with open("VoiceInk.xcodeproj/project.pbxproj", "r") as f:
@@ -72,7 +72,10 @@ with open("VoiceInk.xcodeproj/project.pbxproj", "w") as f:
     f.write(content)
 
 print("✅ 签名设置已禁用")
-EOF
+SCRIPT_END
+        
+        # 运行 Python 脚本
+        python3 disable_signing.py
         
     - name: Build VoiceInk
       run: |
